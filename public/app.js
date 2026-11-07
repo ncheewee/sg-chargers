@@ -1,6 +1,7 @@
 import {
   CHEAP_NEAR_M,
-  compareNearby,
+  brandFor,
+  compareRows,
   distanceMetres,
   formatConnectorPrice,
   formatDistance,
@@ -27,10 +28,13 @@ const state = {
   origin: null,
   geo: "idle",
   filters: { free: false, dc: false, ccs: false, type2: false },
+  operators: new Set(),
+  operatorsOpen: false,
+  operatorChoices: [],
+  sort: "nearest",
   view: "list",
   limit: PAGE,
   query: "",
-  cheap: false,
   suggestions: [],
   suggestOpen: false,
   placeWarning: "",
@@ -54,9 +58,29 @@ let deferredInstall = null;
 document.querySelector("#view-list").addEventListener("click", () => setView("list"));
 document.querySelector("#view-map").addEventListener("click", () => setView("map"));
 document.querySelector("#near").addEventListener("click", () => useNearMe());
-document.querySelector("#cheap").addEventListener("click", () => {
-  state.cheap = !state.cheap;
+document.querySelector("#sort").addEventListener("change", (event) => {
+  state.sort = event.target.value;
   state.limit = PAGE;
+  map.pinned = "";
+  render();
+});
+document.querySelector("#operators").addEventListener("click", () => {
+  state.operatorsOpen = !state.operatorsOpen;
+  renderOperatorPanel();
+});
+document.querySelector("#operator-panel").addEventListener("click", (event) => {
+  const choice = event.target.closest("[data-operator]");
+  if (!choice) return;
+  const index = choice.dataset.operator;
+  if (index === "all") state.operators = new Set();
+  else {
+    const label = state.operatorChoices[Number(index)];
+    if (!label) return;
+    if (state.operators.has(label)) state.operators.delete(label);
+    else state.operators.add(label);
+  }
+  state.limit = PAGE;
+  map.pinned = "";
   render();
 });
 document.querySelector("#filter-free").addEventListener("click", () => toggleFilter("free"));
@@ -76,6 +100,10 @@ document.addEventListener("keydown", (event) => {
 });
 document.addEventListener("click", (event) => {
   if (!event.target.closest("form")) closeSuggestions();
+  if (state.operatorsOpen && !event.target.closest(".tools") && !event.target.closest("#operator-panel")) {
+    state.operatorsOpen = false;
+    renderOperatorPanel();
+  }
 });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (state.view === "map") renderMain();
@@ -134,7 +162,7 @@ function onSearch() {
   state.query = query;
   state.limit = PAGE;
   state.suggestOpen = query.length >= 2;
-  state.suggestions = localSuggestions(query).map((site) => ({ kind: "site", site }));
+  state.suggestions = buildSuggestions(query);
   state.placeWarning = "";
   renderSuggestions();
   renderStatus();
@@ -153,7 +181,7 @@ async function fetchPlaces(query) {
       signal: suggestAbort.signal,
     });
     if (!response.ok) {
-      state.suggestions = localSuggestions(query).map((site) => ({ kind: "site", site }));
+      state.suggestions = buildSuggestions(query);
       state.placeWarning = "Place names are unavailable. Matching chargers still appear.";
       state.suggestOpen = true;
       renderSuggestions();
@@ -162,14 +190,32 @@ async function fetchPlaces(query) {
     const body = await response.json();
     if (search.value.trim() !== query) return;
     const places = (body.results || []).map((place) => ({ kind: "place", place }));
-    const sites = localSuggestions(query).map((site) => ({ kind: "site", site }));
-    state.suggestions = [...places, ...sites].slice(0, 8);
+    state.suggestions = buildSuggestions(query, places);
     state.placeWarning = body.configured ? body.warning || "" : "Place names are unavailable. Matching chargers still appear.";
     state.suggestOpen = true;
     renderSuggestions();
   } catch (error) {
     if (error.name === "AbortError") return;
   }
+}
+
+function buildSuggestions(query, places = []) {
+  return [...operatorSuggestions(query), ...places, ...localSuggestions(query).map((site) => ({ kind: "site", site }))].slice(0, 8);
+}
+
+function operatorSuggestions(query) {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2) return [];
+  const counts = new Map();
+  for (const site of state.payload?.sites || []) {
+    const label = site.operatorLabel || "";
+    const raw = site.operator || "";
+    if (!label.toLowerCase().includes(needle) && !raw.toLowerCase().includes(needle)) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, count]) => ({ kind: "operator", label, count }));
 }
 
 function localSuggestions(query) {
@@ -189,11 +235,22 @@ function scoreSite(site, needle) {
   if (name.startsWith(needle)) return 80;
   if (name.includes(needle)) return 60;
   if (site.address.toLowerCase().includes(needle)) return 40;
-  if (site.operatorLabel.toLowerCase().includes(needle)) return 20;
+  if (site.operatorLabel.toLowerCase().includes(needle) || (site.operator || "").toLowerCase().includes(needle)) return 20;
   return 0;
 }
 
 function chooseSuggestion(item) {
+  if (item.kind === "operator") {
+    state.operators = new Set([item.label]);
+    state.operatorsOpen = false;
+    state.query = "";
+    search.value = "";
+    state.limit = PAGE;
+    map.pinned = "";
+    closeSuggestions();
+    render();
+    return;
+  }
   if (item.kind === "place") {
     state.origin = { lat: item.place.lat, lng: item.place.lng, label: item.place.label, kind: "place" };
     state.selectedId = null;
@@ -221,21 +278,31 @@ function setView(view) {
   render();
 }
 
+function activeFilters() {
+  return { ...state.filters, operators: state.operators };
+}
+
 function ranked() {
   const sites = state.payload?.sites || [];
   const query = state.query.trim();
+  const filters = activeFilters();
   return sites
-    .filter((site) => siteMatches(site, state.filters) && siteMatchesQuery(site, query))
-    .map((site) => ({
-      site,
-      name: site.name,
-      metres:
-        state.origin && site.lat != null && site.lng != null
-          ? distanceMetres(state.origin.lat, state.origin.lng, site.lat, site.lng)
-          : Number.POSITIVE_INFINITY,
-      kwh: lowestKwh(poolFor(site, state.filters)),
-    }))
-    .sort((a, b) => compareNearby(a, b, state.cheap));
+    .filter((site) => siteMatches(site, filters) && siteMatchesQuery(site, query))
+    .map((site) => {
+      const pool = poolFor(site, filters);
+      return {
+        site,
+        name: site.name,
+        operator: site.operatorLabel,
+        metres:
+          state.origin && site.lat != null && site.lng != null
+            ? distanceMetres(state.origin.lat, state.origin.lng, site.lat, site.lng)
+            : Number.POSITIVE_INFINITY,
+        kwh: lowestKwh(pool),
+        free: summarize(pool).free,
+      };
+    })
+    .sort((a, b) => compareRows(a, b, state.sort));
 }
 
 function render() {
@@ -252,7 +319,8 @@ function renderStatus() {
 
   const pressed = state.origin?.kind === "geo" && state.geo === "granted";
   document.querySelector("#near").setAttribute("aria-pressed", String(pressed));
-  document.querySelector("#cheap").setAttribute("aria-pressed", String(state.cheap));
+  document.querySelector("#sort").value = state.sort;
+  renderOperatorPanel();
   for (const [key, id] of [
     ["free", "filter-free"],
     ["dc", "filter-dc"],
@@ -265,23 +333,33 @@ function renderStatus() {
   document.querySelector("#view-map").setAttribute("aria-pressed", String(state.view === "map"));
 
   const searching = state.query.trim().length >= 2;
-  const rows = state.origin || searching ? ranked() : [];
-  if (!state.origin && !searching) {
+  const narrowed = searching || state.operators.size > 0;
+  const rows = state.origin || narrowed ? ranked() : [];
+  const names = [...state.operators];
+  const brand = names.length === 1 ? `${names[0]} ` : "";
+  const from = names.length > 1 ? ` from ${names.length} operators` : "";
+  const matched = searching ? ` matching “${state.query.trim()}”` : "";
+  if (!state.origin && !narrowed) {
     context.textContent =
       state.geo === "pending" ? "Finding where you are." : "Search for a postal code or place in Singapore.";
   } else if (!state.origin) {
-    context.textContent = `${rows.length} sites match “${state.query.trim()}”. Pick one, or search a place to sort from there.`;
+    context.textContent = `${rows.length} ${brand}sites${from}${matched}. Set a place to see distance.`;
   } else {
     const where = state.origin.kind === "geo" ? "you" : state.origin.label;
     const far = rows[0] && rows[0].metres > 30000 ? " You look far from these." : "";
-    const matched = state.query.trim().length >= 2 ? ` matching “${state.query.trim()}”` : "";
-    if (state.cheap) {
+    if (state.sort === "cheap") {
       const priced = rows.some((row) => row.metres <= CHEAP_NEAR_M && row.kwh != null);
       context.textContent = priced
         ? `Cheapest per kWh within 3 km of ${where}${matched}, then farther sites. Straight-line, not a drive time. Hourly prices are not compared.`
         : `No per-kWh price within 3 km of ${where}${matched}. Straight-line, not a drive time.`;
+    } else if (state.sort === "price") {
+      context.textContent = `${rows.length} ${brand}sites${from}${matched}, lowest per-kWh first. Hourly prices are not compared. Straight-line, not a drive time.${far}`;
+    } else if (state.sort === "free") {
+      context.textContent = `${rows.length} ${brand}sites${from}${matched}, most free plugs first. Straight-line, not a drive time.${far}`;
+    } else if (state.sort === "operator") {
+      context.textContent = `${rows.length} ${brand}sites${from}${matched}, grouped by operator. Straight-line, not a drive time.${far}`;
     } else {
-      context.textContent = `${rows.length} sites${matched} nearest to ${where}. Straight-line, not a drive time.${far}`;
+      context.textContent = `${rows.length} ${brand}sites${from}${matched} nearest to ${where}. Straight-line, not a drive time.${far}`;
     }
   }
 
@@ -290,8 +368,43 @@ function renderStatus() {
   else sourceNote.textContent = "Charger data: LTA DataMall.";
 }
 
+function renderOperatorPanel() {
+  const panel = document.querySelector("#operator-panel");
+  const button = document.querySelector("#operators");
+  const names = [...state.operators];
+  button.setAttribute("aria-pressed", String(names.length > 0));
+  button.setAttribute("aria-expanded", String(state.operatorsOpen));
+  button.textContent = names.length === 0 ? "Operators" : names.length === 1 ? names[0] : `${names.length} operators`;
+  panel.hidden = !state.operatorsOpen;
+  if (!state.operatorsOpen) return;
+  const scroll = panel.scrollTop;
+  const filters = { ...state.filters, operators: new Set() };
+  const counts = new Map();
+  for (const site of state.payload?.sites || []) {
+    if (!siteMatches(site, filters) || !siteMatchesQuery(site, state.query)) continue;
+    const label = site.operatorLabel || "Unknown";
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  state.operatorChoices = [...counts.keys()].sort((a, b) => a.localeCompare(b));
+  const rows = state.operatorChoices
+    .map((label, index) => {
+      const on = state.operators.has(label) ? "true" : "false";
+      return `<button type="button" class="operator-row" data-operator="${index}" aria-pressed="${on}">${brandHtml(label)}<span class="operator-count">${counts.get(label)}</span></button>`;
+    })
+    .join("");
+  const clear = names.length ? `<button type="button" class="operator-row" data-operator="all">All operators</button>` : "";
+  panel.innerHTML = `${clear}${rows}`;
+  panel.scrollTop = scroll;
+}
+
+function brandHtml(label) {
+  const brand = brandFor(label);
+  return `<span class="brand"><span class="brand-mark" style="--brand:${brand.hue}">${esc(brand.mark)}</span><span class="brand-name">${esc(label)}</span></span>`;
+}
+
 function renderMain() {
-  if (!state.origin && state.query.trim().length < 2) {
+  const narrowed = state.query.trim().length >= 2 || state.operators.size > 0;
+  if (!state.origin && !narrowed) {
     main.innerHTML = `<p class="empty">The list starts from where you are, or from a place you search.</p>`;
     return;
   }
@@ -316,8 +429,8 @@ function renderMain() {
         .filter(Boolean)
         .join(" · ");
       return `<li><button type="button" class="site" data-id="${esc(site.id)}">
-        <span class="site-top"><span class="site-name">${esc(site.name)}</span><span class="distance">${esc(formatDistance(metres))}</span></span>
-        <p class="operator">${esc(site.operatorLabel)}</p>
+        <span class="site-top">${brandHtml(site.operatorLabel)}<span class="distance">${esc(formatDistance(metres))}</span></span>
+        <p class="site-name">${esc(site.name)}</p>
         <p class="counts">${counts || "No connectors match"}</p>
         <p class="price-line">${esc(formatPrices(summary))}${summary.fastest ? ` · ${esc(formatKw(summary.fastest))}` : ""}</p>
       </button></li>`;
@@ -347,10 +460,13 @@ function renderSuggestions() {
   }
   const items = state.suggestions
     .map((item, index) => {
+      if (item.kind === "operator") {
+        return `<li><button type="button" role="option" data-index="${index}">${brandHtml(item.label)}<span class="suggestion-kind">${item.count} sites</span></button></li>`;
+      }
       if (item.kind === "place") {
         return `<li><button type="button" role="option" data-index="${index}"><span>${esc(item.place.label)}</span><br><span class="suggestion-kind">${esc(item.place.address)}</span></button></li>`;
       }
-      return `<li><button type="button" role="option" data-index="${index}"><span>${esc(item.site.name)}</span><br><span class="suggestion-kind">${esc(item.site.operatorLabel)} · charger</span></button></li>`;
+      return `<li><button type="button" role="option" data-index="${index}">${brandHtml(item.site.operatorLabel)}<span>${esc(item.site.name)}</span></button></li>`;
     })
     .join("");
   const warning = state.placeWarning ? `<li class="suggestion-kind" style="padding:8px 12px">${esc(state.placeWarning)}</li>` : "";
@@ -394,7 +510,7 @@ function openDetail(id) {
       : `<a class="text-button" href="https://www.google.com/maps/dir/?api=1&destination=${site.lat},${site.lng}" target="_blank" rel="noopener noreferrer">Directions</a>`;
   detail.innerHTML = `<div class="detail-inner ${fresh ? "is-fresh" : ""}">
     <div class="detail-head"><h2>${esc(site.name)}</h2><button type="button" class="text-button" id="close-detail">Close</button></div>
-    <p class="operator">${esc(site.operatorLabel)}</p>
+    ${brandHtml(site.operatorLabel)}
     <p class="address">${esc(site.address)}</p>
     <div class="actions">${directions}${operator}</div>
     ${rows}
@@ -416,7 +532,7 @@ function closeDetail() {
 
 function renderMap(rows) {
   const origin = state.origin;
-  const pin = `${origin ? `${origin.lat},${origin.lng}` : "none"}|${state.query.trim().toLowerCase()}`;
+  const pin = `${origin ? `${origin.lat},${origin.lng}` : "none"}|${state.query.trim().toLowerCase()}|${[...state.operators].sort().join("|")}|${state.sort}`;
   const refit = map.pinned !== pin;
   main.innerHTML = `<div class="map" id="map" data-zoom="">
       <div class="map-layer"></div>
@@ -426,7 +542,8 @@ function renderMap(rows) {
     </div>`;
   const viewport = document.querySelector("#map");
   if (refit) {
-    const focus = state.query.trim().length >= 2 ? rows.slice(0, 40) : rows.slice(0, 20);
+    const narrowed = state.query.trim().length >= 2 || state.operators.size > 0;
+    const focus = narrowed ? rows.slice(0, 40) : rows.slice(0, 20);
     fitMap(viewport, focus.length ? focus : rows);
     map.pinned = pin;
   }
@@ -549,9 +666,10 @@ function paintMap(viewport, rows) {
     })
     .filter(({ point }) => point.x >= left - margin && point.x <= left + width + margin && point.y >= top - margin && point.y <= top + height + margin)
     .map(({ site, point }) => {
-      const summary = summarize(poolFor(site, state.filters));
+      const summary = summarize(poolFor(site, activeFilters()));
       const klass = fresh && summary.free > 0 ? "marker fresh" : "marker";
-      return `<button type="button" class="${klass}" data-id="${esc(site.id)}" aria-label="${esc(`${site.operatorLabel}, ${site.name}`)}" style="left:${point.x - left}px;top:${point.y - top}px"></button>`;
+      const hue = brandFor(site.operatorLabel).hue;
+      return `<button type="button" class="${klass}" data-id="${esc(site.id)}" aria-label="${esc(`${site.operatorLabel}, ${site.name}`)}" style="left:${point.x - left}px;top:${point.y - top}px;--brand:${hue}"></button>`;
     });
   if (state.origin?.kind === "geo") {
     const you = world(state.origin.lat, state.origin.lng, map.zoom);

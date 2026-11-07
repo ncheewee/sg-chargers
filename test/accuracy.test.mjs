@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  brandFor,
   compareNearby,
+  compareRows,
   distanceMetres,
   formatConnectorPrice,
   formatPrices,
@@ -33,14 +35,32 @@ test("short operator names stay readable", () => {
 });
 
 test("a search matches an operator, and cheap nearby prefers a lower per-kWh price", () => {
-  const mnl = { name: "Depot", address: "1 Road", postal: "123456", operator: "MNL SOLUTIONS PTE. LTD.", operatorLabel: "MNL Solutions" };
+  const mnl = {
+    name: "Depot",
+    address: "1 Road",
+    postal: "123456",
+    operator: "MNL SOLUTIONS PTE. LTD.",
+    operatorLabel: "MNL Solutions",
+    connectors: [{ plug: "Type 2", status: "free", current: "AC" }],
+  };
+  const shell = { ...mnl, operatorLabel: "Shell", operator: "SHELL SINGAPORE PTE. LTD." };
+  const plugFilters = { free: false, dc: false, ccs: false, type2: false };
   assert.equal(siteMatchesQuery(mnl, "mnl"), true);
   assert.equal(siteMatchesQuery(mnl, "shell"), false);
-  const nearCheap = { name: "A", metres: 800, kwh: 0.5 };
-  const nearDear = { name: "B", metres: 400, kwh: 0.9 };
-  const farCheap = { name: "C", metres: 8000, kwh: 0.2 };
+  assert.equal(siteMatches(mnl, { ...plugFilters, operators: new Set(["MNL Solutions"]) }), true);
+  assert.equal(siteMatches(shell, { ...plugFilters, operators: new Set(["MNL Solutions"]) }), false);
+  assert.equal(siteMatches(mnl, { ...plugFilters, operators: new Set() }), true);
+  assert.equal(brandFor("MNL Solutions").mark, "MNL");
+  assert.notEqual(brandFor("MNL Solutions").hue, brandFor("Shell").hue);
+  const nearCheap = { name: "A", metres: 800, kwh: 0.5, free: 1, operator: "Shell" };
+  const nearDear = { name: "B", metres: 400, kwh: 0.9, free: 4, operator: "MNL Solutions" };
+  const farCheap = { name: "C", metres: 8000, kwh: 0.2, free: 0, operator: "Charge+" };
   assert.ok(compareNearby(nearCheap, nearDear, true) < 0);
   assert.ok(compareNearby(nearDear, farCheap, true) < 0);
+  assert.ok(compareRows(farCheap, nearDear, "price") < 0);
+  assert.ok(compareRows(nearDear, farCheap, "nearest") < 0);
+  assert.ok(compareRows(nearDear, nearCheap, "free") < 0);
+  assert.ok(compareRows(farCheap, nearDear, "operator") < 0);
   assert.equal(lowestKwh([{ unit: "h", price: 1 }, { unit: "kWh", price: 0.7 }, { unit: "kWh", price: 0.4 }]), 0.4);
   assert.equal(lowestKwh([{ unit: "h", price: 0.1 }]), null);
 });

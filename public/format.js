@@ -45,6 +45,13 @@ export function poolFor(site, filters) {
 }
 
 export function siteMatches(site, filters) {
+  const selected = filters.operators;
+  const selectedCount = selected?.size ?? selected?.length ?? 0;
+  if (selectedCount > 0) {
+    const label = site.operatorLabel || "";
+    const chosen = typeof selected.has === "function" ? selected.has(label) : selected.includes(label);
+    if (!chosen) return false;
+  }
   const pool = poolFor(site, filters);
   if (pool.length === 0) return false;
   if (filters.free && !pool.some((connector) => connector.status === "free")) return false;
@@ -117,6 +124,50 @@ export function compareNearby(a, b, cheap) {
       if (aMissing !== bMissing) return aMissing - bMissing;
       if (a.kwh != null && a.kwh !== b.kwh) return a.kwh - b.kwh;
     }
+  }
+  if (a.metres !== b.metres) return a.metres - b.metres;
+  return a.name.localeCompare(b.name);
+}
+
+const BRANDS = {
+  "SP Mobility": { mark: "SP", hue: 16 },
+  "ComfortDelGro Engie": { mark: "CDG", hue: 214 },
+  Shell: { mark: "Sh", hue: 46 },
+  "Charge+": { mark: "C+", hue: 174 },
+  "Strides YTL": { mark: "YTL", hue: 126 },
+  "VOLT Singapore": { mark: "V", hue: 192 },
+  "MNL Solutions": { mark: "MNL", hue: 332 },
+  Tesla: { mark: "T", hue: 350 },
+};
+
+export function brandFor(label) {
+  const known = BRANDS[label];
+  if (known) return known;
+  const words = String(label || "").split(/\s+/).filter(Boolean);
+  let mark = "?";
+  if (words.length >= 2 && words[0].length <= 4 && words[0] === words[0].toUpperCase()) mark = words[0].slice(0, 4);
+  else if (words.length >= 2) mark = `${words[0][0]}${words[1][0]}`.toUpperCase();
+  else if (words[0]) mark = words[0].slice(0, 3).toUpperCase();
+  let hash = 0;
+  for (const char of String(label || "")) hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
+  let hue = hash % 360;
+  if (Math.abs(hue - 152) < 18 || Math.abs(hue - 332) < 14) hue = (hue + 48) % 360;
+  return { mark, hue };
+}
+
+export function compareRows(a, b, sort) {
+  if (sort === "cheap") return compareNearby(a, b, true);
+  if (sort === "price") {
+    const aMissing = a.kwh == null ? 1 : 0;
+    const bMissing = b.kwh == null ? 1 : 0;
+    if (aMissing !== bMissing) return aMissing - bMissing;
+    if (a.kwh != null && a.kwh !== b.kwh) return a.kwh - b.kwh;
+  } else if (sort === "free") {
+    const byFree = (b.free || 0) - (a.free || 0);
+    if (byFree) return byFree;
+  } else if (sort === "operator") {
+    const byOperator = (a.operator || "").localeCompare(b.operator || "");
+    if (byOperator) return byOperator;
   }
   if (a.metres !== b.metres) return a.metres - b.metres;
   return a.name.localeCompare(b.name);
