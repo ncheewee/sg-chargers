@@ -1,6 +1,9 @@
 import { operatorInfo, titleCasePlace } from "./operators.mjs";
 
-const BATCH_HOST = "dmprod-datasets.s3.ap-southeast-1.amazonaws.com";
+const BATCH_HOSTS = new Set([
+  "dmprod-datasets.s3.ap-southeast-1.amazonaws.com",
+  "dm-traffic-flow-data.s3.ap-southeast-1.amazonaws.com",
+]);
 
 export function extractLtaBatchLink(payload) {
   if (!payload || typeof payload !== "object") return "";
@@ -27,7 +30,7 @@ export function isAllowedBatchUrl(value) {
     const url = new URL(value);
     return (
       url.protocol === "https:" &&
-      url.hostname.toLowerCase() === BATCH_HOST &&
+      BATCH_HOSTS.has(url.hostname.toLowerCase()) &&
       /^\/ev-batch\/\d{4}-\d{2}-\d{2}\//i.test(url.pathname) &&
       /\/EVBatch-/i.test(url.pathname)
     );

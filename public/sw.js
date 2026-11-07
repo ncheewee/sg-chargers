@@ -1,4 +1,4 @@
-const VERSION = "sg-chargers-2";
+const VERSION = "sg-chargers-3";
 const SHELL = ["", "styles.css", "app.js", "format.js", "manifest.webmanifest", "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"].map(
   (path) => new URL(path || "./", self.registration.scope).href,
 );
@@ -18,7 +18,7 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || event.request.method !== "GET") return;
+  if (event.request.method !== "GET" || url.origin !== self.location.origin || url.pathname.includes("/api/")) return;
   event.respondWith(networkFirst(event.request));
 });
 

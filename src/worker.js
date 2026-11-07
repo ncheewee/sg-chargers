@@ -3,6 +3,7 @@ import { sampleFeed } from "./sample-feed.mjs";
 
 const LTA_BATCH_URL = "https://datamall2.mytransport.sg/ltaodataservice/EVCBatch";
 const ONEMAP_ORIGIN = "https://www.onemap.gov.sg";
+const PAGES_ORIGIN = "https://ncheewee.github.io";
 const WINDOW_MS = 5 * 60 * 1000;
 const FETCH_MS = 15000;
 
@@ -11,21 +12,24 @@ let ltaInflight = null;
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/api/health") {
-      return json({
-        ok: true,
-        ltaConfigured: Boolean(env.LTA_ACCOUNT_KEY),
-        onemapConfigured: onemapConfigured(env),
-      });
-    }
-    if (request.method === "GET" && url.pathname === "/api/chargers") {
-      return json(await chargersPayload(request, env, ctx));
-    }
-    if (request.method === "GET" && url.pathname === "/api/search") {
-      return json(await searchPlaces(url.searchParams.get("q") || "", env, request));
-    }
     if (url.pathname.startsWith("/api/")) {
-      return json({ error: "Not found" }, 404);
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders(request) });
+      }
+      if (request.method === "GET" && url.pathname === "/api/health") {
+        return json(request, {
+          ok: true,
+          ltaConfigured: Boolean(env.LTA_ACCOUNT_KEY),
+          onemapConfigured: onemapConfigured(env),
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/api/chargers") {
+        return json(request, await chargersPayload(request, env, ctx));
+      }
+      if (request.method === "GET" && url.pathname === "/api/search") {
+        return json(request, await searchPlaces(url.searchParams.get("q") || "", env, request));
+      }
+      return json(request, { error: "Not found" }, 404);
     }
 
     const asset = await env.ASSETS.fetch(request);
@@ -254,13 +258,31 @@ function contentSecurityPolicy() {
   ].join("; ");
 }
 
-function json(body, status = 200) {
+function allowedOrigin(origin) {
+  if (origin === PAGES_ORIGIN) return origin;
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || "")) return origin;
+  return "";
+}
+
+function corsHeaders(request) {
+  const origin = allowedOrigin(request.headers.get("Origin") || "");
+  if (!origin) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    Vary: "Origin",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+}
+
+function json(request, body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      ...corsHeaders(request),
     },
   });
 }

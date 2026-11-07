@@ -212,7 +212,10 @@ test("money keeps the feed's fractions", () => {
 
 test("batch links are limited to the LTA file host", () => {
   const good = "https://dmprod-datasets.s3.ap-southeast-1.amazonaws.com/ev-batch/2026-11-06/EVBatch-1.json";
+  const guide =
+    "https://dm-traffic-flow-data.s3.ap-southeast-1.amazonaws.com/ev-batch/2026-02-05/EVBatch-20260205130000.json";
   assert.equal(isAllowedBatchUrl(good), true);
+  assert.equal(isAllowedBatchUrl(guide), true);
   assert.equal(isAllowedBatchUrl("https://evil.example/ev-batch/2026-11-06/EVBatch-1.json"), false);
   assert.equal(extractLtaBatchLink({ value: [{ Link: good }] }), good);
   assert.equal(extractLtaBatchLink({ Link: "https://evil.example/steal" }), "");

@@ -12,6 +12,12 @@ import {
 } from "./format.js";
 
 const PAGE = 20;
+const API_ORIGIN = location.hostname === "ncheewee.github.io" ? "https://sg-chargers.ncheewee.workers.dev" : "";
+
+function apiUrl(path) {
+  const base = API_ORIGIN ? `${API_ORIGIN}/` : document.baseURI;
+  return new URL(path.replace(/^\//, ""), base);
+}
 const state = {
   payload: null,
   origin: null,
@@ -72,7 +78,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
 
 async function loadChargers() {
   try {
-    const response = await fetch(new URL("api/chargers", document.baseURI), { cache: "no-store" });
+    const response = await fetch(apiUrl("api/chargers"), { cache: "no-store" });
     state.payload = await response.json();
   } catch {
     state.payload = { source: "unavailable", sites: [], connectorCount: 0, fetchedAt: null, ltaUpdatedAt: null };
@@ -127,7 +133,7 @@ function onSearch() {
 async function fetchPlaces(query) {
   suggestAbort = new AbortController();
   try {
-    const response = await fetch(new URL(`api/search?q=${encodeURIComponent(query)}`, document.baseURI), {
+    const response = await fetch(apiUrl(`api/search?q=${encodeURIComponent(query)}`), {
       cache: "no-store",
       signal: suggestAbort.signal,
     });
