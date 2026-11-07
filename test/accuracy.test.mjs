@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  compareNearby,
   distanceMetres,
   formatConnectorPrice,
   formatPrices,
   formatSgd,
   freshnessCopy,
   isFresh,
+  lowestKwh,
   poolFor,
   siteMatches,
+  siteMatchesQuery,
   summarize,
 } from "../public/format.js";
 import { extractLtaBatchLink, isAllowedBatchUrl, normalizeFeed } from "../src/normalize.mjs";
-import { titleCasePlace } from "../src/operators.mjs";
+import { operatorInfo, titleCasePlace } from "../src/operators.mjs";
 import { sampleFeed } from "../src/sample-feed.mjs";
 
 const sample = normalizeFeed(sampleFeed);
@@ -22,6 +25,25 @@ function siteNamed(name, operator) {
   assert.ok(found, `${operator} at ${name}`);
   return found;
 }
+
+test("short operator names stay readable", () => {
+  assert.equal(operatorInfo("MNL SOLUTIONS PTE. LTD.").label, "MNL Solutions");
+  assert.equal(operatorInfo("ST ENGINEERING URBAN SOLUTIONS LTD.").label, "ST Engineering Urban Solutions");
+  assert.equal(operatorInfo("SP MOBILITY PTE. LTD.").label, "SP Mobility");
+});
+
+test("a search matches an operator, and cheap nearby prefers a lower per-kWh price", () => {
+  const mnl = { name: "Depot", address: "1 Road", postal: "123456", operator: "MNL SOLUTIONS PTE. LTD.", operatorLabel: "MNL Solutions" };
+  assert.equal(siteMatchesQuery(mnl, "mnl"), true);
+  assert.equal(siteMatchesQuery(mnl, "shell"), false);
+  const nearCheap = { name: "A", metres: 800, kwh: 0.5 };
+  const nearDear = { name: "B", metres: 400, kwh: 0.9 };
+  const farCheap = { name: "C", metres: 8000, kwh: 0.2 };
+  assert.ok(compareNearby(nearCheap, nearDear, true) < 0);
+  assert.ok(compareNearby(nearDear, farCheap, true) < 0);
+  assert.equal(lowestKwh([{ unit: "h", price: 1 }, { unit: "kWh", price: 0.7 }, { unit: "kWh", price: 0.4 }]), 0.4);
+  assert.equal(lowestKwh([{ unit: "h", price: 0.1 }]), null);
+});
 
 test("keeps a letter that follows a block number", () => {
   assert.equal(titleCasePlace("BLK 207A BISHAN STREET 23"), "Blk 207A Bishan Street 23");

@@ -27,7 +27,11 @@ function fallbackLabel(raw) {
     .replace(/[.,]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return titleCasePlace(stripped || String(raw ?? "").trim() || "Unknown");
+  if (!stripped) return titleCasePlace(String(raw ?? "").trim()) || "Unknown";
+  return stripped
+    .split(" ")
+    .map((word) => (/^[A-Z0-9]{2,4}$/.test(word) ? word : titleCasePlace(word)))
+    .join(" ");
 }
 
 export function titleCasePlace(value) {

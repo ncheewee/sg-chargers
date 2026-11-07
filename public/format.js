@@ -83,6 +83,45 @@ export function summarize(connectors) {
   };
 }
 
+export const CHEAP_NEAR_M = 3000;
+
+export function siteMatchesQuery(site, needle) {
+  const query = String(needle ?? "").trim().toLowerCase();
+  if (query.length < 2) return true;
+  return (
+    (site.postal || "") === query ||
+    (site.name || "").toLowerCase().includes(query) ||
+    (site.address || "").toLowerCase().includes(query) ||
+    (site.operatorLabel || "").toLowerCase().includes(query) ||
+    (site.operator || "").toLowerCase().includes(query)
+  );
+}
+
+export function lowestKwh(connectors) {
+  let best = null;
+  for (const connector of connectors) {
+    if (connector.unit !== "kWh" || typeof connector.price !== "number") continue;
+    if (best == null || connector.price < best) best = connector.price;
+  }
+  return best;
+}
+
+export function compareNearby(a, b, cheap) {
+  if (cheap) {
+    const band = (row) => (row.metres <= CHEAP_NEAR_M ? 0 : 1);
+    const byBand = band(a) - band(b);
+    if (byBand) return byBand;
+    if (band(a) === 0) {
+      const aMissing = a.kwh == null ? 1 : 0;
+      const bMissing = b.kwh == null ? 1 : 0;
+      if (aMissing !== bMissing) return aMissing - bMissing;
+      if (a.kwh != null && a.kwh !== b.kwh) return a.kwh - b.kwh;
+    }
+  }
+  if (a.metres !== b.metres) return a.metres - b.metres;
+  return a.name.localeCompare(b.name);
+}
+
 export function formatPrices(summary) {
   if (summary.prices.length === 0) return "No price in the feed";
   return summary.prices

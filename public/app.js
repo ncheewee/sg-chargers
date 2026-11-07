@@ -1,4 +1,6 @@
 import {
+  CHEAP_NEAR_M,
+  compareNearby,
   distanceMetres,
   formatConnectorPrice,
   formatDistance,
@@ -6,8 +8,10 @@ import {
   formatPrices,
   freshnessCopy,
   isFresh,
+  lowestKwh,
   poolFor,
   siteMatches,
+  siteMatchesQuery,
   summarize,
 } from "./format.js";
 
@@ -25,6 +29,8 @@ const state = {
   filters: { free: false, dc: false, ccs: false, type2: false },
   view: "list",
   limit: PAGE,
+  query: "",
+  cheap: false,
   suggestions: [],
   suggestOpen: false,
   placeWarning: "",
@@ -48,6 +54,11 @@ let deferredInstall = null;
 document.querySelector("#view-list").addEventListener("click", () => setView("list"));
 document.querySelector("#view-map").addEventListener("click", () => setView("map"));
 document.querySelector("#near").addEventListener("click", () => useNearMe());
+document.querySelector("#cheap").addEventListener("click", () => {
+  state.cheap = !state.cheap;
+  state.limit = PAGE;
+  render();
+});
 document.querySelector("#filter-free").addEventListener("click", () => toggleFilter("free"));
 document.querySelector("#filter-dc").addEventListener("click", () => toggleFilter("dc"));
 document.querySelector("#filter-ccs").addEventListener("click", () => toggleFilter("ccs"));
@@ -120,10 +131,14 @@ function useNearMe() {
 
 function onSearch() {
   const query = search.value.trim();
+  state.query = query;
+  state.limit = PAGE;
   state.suggestOpen = query.length >= 2;
   state.suggestions = localSuggestions(query).map((site) => ({ kind: "site", site }));
   state.placeWarning = "";
   renderSuggestions();
+  renderStatus();
+  renderMain();
   clearTimeout(suggestTimer);
   suggestAbort?.abort();
   if (query.length < 2) return;
@@ -187,6 +202,7 @@ function chooseSuggestion(item) {
     state.selectedId = item.site.id;
   }
   state.limit = PAGE;
+  state.query = "";
   search.value = "";
   closeSuggestions();
   render();
@@ -207,16 +223,19 @@ function setView(view) {
 
 function ranked() {
   const sites = state.payload?.sites || [];
+  const query = state.query.trim();
   return sites
-    .filter((site) => siteMatches(site, state.filters))
+    .filter((site) => siteMatches(site, state.filters) && siteMatchesQuery(site, query))
     .map((site) => ({
       site,
+      name: site.name,
       metres:
         state.origin && site.lat != null && site.lng != null
           ? distanceMetres(state.origin.lat, state.origin.lng, site.lat, site.lng)
           : Number.POSITIVE_INFINITY,
+      kwh: lowestKwh(poolFor(site, state.filters)),
     }))
-    .sort((a, b) => a.metres - b.metres || a.site.name.localeCompare(b.site.name));
+    .sort((a, b) => compareNearby(a, b, state.cheap));
 }
 
 function render() {
@@ -233,6 +252,7 @@ function renderStatus() {
 
   const pressed = state.origin?.kind === "geo" && state.geo === "granted";
   document.querySelector("#near").setAttribute("aria-pressed", String(pressed));
+  document.querySelector("#cheap").setAttribute("aria-pressed", String(state.cheap));
   for (const [key, id] of [
     ["free", "filter-free"],
     ["dc", "filter-dc"],
@@ -244,14 +264,25 @@ function renderStatus() {
   document.querySelector("#view-list").setAttribute("aria-pressed", String(state.view === "list"));
   document.querySelector("#view-map").setAttribute("aria-pressed", String(state.view === "map"));
 
-  const rows = state.origin ? ranked() : [];
-  if (!state.origin) {
+  const searching = state.query.trim().length >= 2;
+  const rows = state.origin || searching ? ranked() : [];
+  if (!state.origin && !searching) {
     context.textContent =
       state.geo === "pending" ? "Finding where you are." : "Search for a postal code or place in Singapore.";
+  } else if (!state.origin) {
+    context.textContent = `${rows.length} sites match “${state.query.trim()}”. Pick one, or search a place to sort from there.`;
   } else {
     const where = state.origin.kind === "geo" ? "you" : state.origin.label;
     const far = rows[0] && rows[0].metres > 30000 ? " You look far from these." : "";
-    context.textContent = `${rows.length} sites nearest to ${where}. Straight-line, not a drive time.${far}`;
+    const matched = state.query.trim().length >= 2 ? ` matching “${state.query.trim()}”` : "";
+    if (state.cheap) {
+      const priced = rows.some((row) => row.metres <= CHEAP_NEAR_M && row.kwh != null);
+      context.textContent = priced
+        ? `Cheapest per kWh within 3 km of ${where}${matched}, then farther sites. Straight-line, not a drive time. Hourly prices are not compared.`
+        : `No per-kWh price within 3 km of ${where}${matched}. Straight-line, not a drive time.`;
+    } else {
+      context.textContent = `${rows.length} sites${matched} nearest to ${where}. Straight-line, not a drive time.${far}`;
+    }
   }
 
   if (state.payload?.source === "lta") sourceNote.textContent = "Charger data: LTA DataMall. Place search: OneMap © SLA.";
@@ -260,14 +291,14 @@ function renderStatus() {
 }
 
 function renderMain() {
-  if (!state.origin) {
+  if (!state.origin && state.query.trim().length < 2) {
     main.innerHTML = `<p class="empty">The list starts from where you are, or from a place you search.</p>`;
     return;
   }
   const rows = ranked();
   const visible = rows.slice(0, state.limit);
   if (state.view === "map") {
-    renderMap(visible);
+    renderMap(rows);
     return;
   }
   if (visible.length === 0) {
@@ -385,9 +416,9 @@ function closeDetail() {
 
 function renderMap(rows) {
   const origin = state.origin;
-  const pin = `${origin.lat},${origin.lng}`;
+  const pin = `${origin ? `${origin.lat},${origin.lng}` : "none"}|${state.query.trim().toLowerCase()}`;
   const refit = map.pinned !== pin;
-  main.innerHTML = `<div class="map" id="map">
+  main.innerHTML = `<div class="map" id="map" data-zoom="">
       <div class="map-layer"></div>
       <div class="map-markers"></div>
       <div class="zoom"><button type="button" id="zoom-in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" aria-label="Zoom out">−</button></div>
@@ -395,74 +426,132 @@ function renderMap(rows) {
     </div>`;
   const viewport = document.querySelector("#map");
   if (refit) {
-    fitMap(viewport, rows);
+    const focus = state.query.trim().length >= 2 ? rows.slice(0, 40) : rows.slice(0, 20);
+    fitMap(viewport, focus.length ? focus : rows);
     map.pinned = pin;
   }
   const paint = () => paintMap(viewport, rows);
   paint();
+  bindMapGestures(viewport, paint);
+}
+
+function bindMapGestures(viewport, paint) {
+  const pointers = new Map();
   let drag = null;
+  let pinch = null;
+
   viewport.addEventListener("pointerdown", (event) => {
-    if (event.target.closest(".marker, .zoom")) return;
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, cx: map.cx, cy: map.cy };
+    if (event.target.closest(".zoom")) return;
+    if (pointers.size === 0 && event.target.closest(".marker")) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     viewport.setPointerCapture(event.pointerId);
+    if (pointers.size === 1) {
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, cx: map.cx, cy: map.cy };
+      pinch = null;
+    } else {
+      drag = null;
+      const dist = pointerSpan(pointers);
+      pinch = dist > 0 ? { dist, zoom: map.zoom } : null;
+    }
   });
   viewport.addEventListener("pointermove", (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size >= 2 && pinch) {
+      const dist = pointerSpan(pointers);
+      if (dist > 0) {
+        setZoom(pinch.zoom + Math.log2(dist / pinch.dist), pointerMid(pointers));
+        paint();
+      }
+      return;
+    }
     if (!drag || drag.id !== event.pointerId) return;
     map.cx = drag.cx - (event.clientX - drag.x);
     map.cy = drag.cy - (event.clientY - drag.y);
     paint();
   });
-  viewport.addEventListener("pointerup", () => {
+  const endPointer = (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.delete(event.pointerId);
+    if (pointers.size === 1) {
+      const [id, point] = pointers.entries().next().value;
+      drag = { id, x: point.x, y: point.y, cx: map.cx, cy: map.cy };
+      pinch = null;
+      return;
+    }
     drag = null;
-  });
+    pinch = null;
+  };
+  viewport.addEventListener("pointerup", endPointer);
+  viewport.addEventListener("pointercancel", endPointer);
   viewport.addEventListener(
     "wheel",
     (event) => {
       event.preventDefault();
-      setZoom(map.zoom + (event.deltaY < 0 ? 1 : -1), { x: event.clientX, y: event.clientY });
+      const step = Math.max(-0.75, Math.min(0.75, -event.deltaY / 300));
+      if (step) setZoom(map.zoom + step, { x: event.clientX, y: event.clientY });
       paint();
     },
     { passive: false },
   );
   document.querySelector("#zoom-in").addEventListener("click", () => {
-    setZoom(map.zoom + 1);
+    setZoom(Math.floor(map.zoom) + 1);
     paint();
   });
   document.querySelector("#zoom-out").addEventListener("click", () => {
-    setZoom(map.zoom - 1);
+    setZoom(Math.ceil(map.zoom) - 1);
     paint();
   });
+}
+
+function pointerSpan(pointers) {
+  const points = [...pointers.values()];
+  if (points.length < 2) return 0;
+  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+}
+
+function pointerMid(pointers) {
+  const points = [...pointers.values()];
+  return { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
 }
 
 function paintMap(viewport, rows) {
   const width = viewport.clientWidth;
   const height = viewport.clientHeight;
+  const tileZ = Math.max(11, Math.min(18, Math.round(map.zoom)));
+  const scale = 2 ** (map.zoom - tileZ);
   const left = map.cx - width / 2;
   const top = map.cy - height / 2;
-  const scale = 256 * 2 ** map.zoom;
-  const minX = Math.max(0, Math.floor(left / 256));
-  const maxX = Math.min(2 ** map.zoom - 1, Math.floor((left + width) / 256));
-  const minY = Math.max(0, Math.floor(top / 256));
-  const maxY = Math.min(2 ** map.zoom - 1, Math.floor((top + height) / 256));
+  const minX = Math.max(0, Math.floor(left / scale / 256));
+  const maxX = Math.min(2 ** tileZ - 1, Math.floor((left + width) / scale / 256));
+  const minY = Math.max(0, Math.floor(top / scale / 256));
+  const maxY = Math.min(2 ** tileZ - 1, Math.floor((top + height) / scale / 256));
   const style = window.matchMedia("(prefers-color-scheme: dark)").matches ? "Night" : "Grey";
   const layer = viewport.querySelector(".map-layer");
+  const size = 256 * scale;
   const tiles = [];
   for (let x = minX; x <= maxX; x += 1) {
     for (let y = minY; y <= maxY; y += 1) {
       tiles.push(
-        `<img class="map-tile" alt="" style="left:${x * 256 - left}px;top:${y * 256 - top}px" src="https://www.onemap.gov.sg/maps/tiles/${style}/${map.zoom}/${x}/${y}.png" />`,
+        `<img class="map-tile" alt="" style="left:${x * size - left}px;top:${y * size - top}px;width:${size}px;height:${size}px" src="https://www.onemap.gov.sg/maps/tiles/${style}/${tileZ}/${x}/${y}.png" />`,
       );
     }
   }
   layer.innerHTML = tiles.join("");
+  viewport.dataset.zoom = map.zoom.toFixed(2);
   const fresh = isFresh(state.payload);
+  const margin = 24;
   const markers = rows
     .filter((row) => row.site.lat != null)
     .map(({ site }) => {
       const point = world(site.lat, site.lng, map.zoom);
+      return { site, point };
+    })
+    .filter(({ point }) => point.x >= left - margin && point.x <= left + width + margin && point.y >= top - margin && point.y <= top + height + margin)
+    .map(({ site, point }) => {
       const summary = summarize(poolFor(site, state.filters));
       const klass = fresh && summary.free > 0 ? "marker fresh" : "marker";
-      return `<button type="button" class="${klass}" data-id="${esc(site.id)}" aria-label="${esc(site.name)}" style="left:${point.x - left}px;top:${point.y - top}px"></button>`;
+      return `<button type="button" class="${klass}" data-id="${esc(site.id)}" aria-label="${esc(`${site.operatorLabel}, ${site.name}`)}" style="left:${point.x - left}px;top:${point.y - top}px"></button>`;
     });
   if (state.origin?.kind === "geo") {
     const you = world(state.origin.lat, state.origin.lng, map.zoom);
@@ -473,7 +562,6 @@ function paintMap(viewport, rows) {
   markerLayer.querySelectorAll(".marker").forEach((marker) => {
     marker.addEventListener("click", () => openDetail(marker.dataset.id));
   });
-  void scale;
 }
 
 function fitMap(viewport, rows) {
@@ -517,7 +605,7 @@ function spanOf(points, zoom) {
 
 function setZoom(next, client) {
   const zoom = Math.max(11, Math.min(18, next));
-  if (zoom === map.zoom) return;
+  if (Math.abs(zoom - map.zoom) < 0.001) return;
   const viewport = document.querySelector("#map");
   const rect = viewport.getBoundingClientRect();
   const ax = client ? client.x - rect.left : rect.width / 2;
