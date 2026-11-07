@@ -1,0 +1,12 @@
+{
+  "name": "sg-chargers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.50.0"
+  }
+}
